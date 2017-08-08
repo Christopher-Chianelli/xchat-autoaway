@@ -20,10 +20,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <pwd.h>
 
 #define PNAME "AutoAway"
 #define PDESC "Auto away when screen is locked"
 #define PVERSION "0.1"
+#define DIR_NAME ".xchat_autoaway"
+
+#define CANNOT_OPEN_DIR_ERROR (1)
+
+static const char *homedir;
+static char autoaway_dir[1024];
+static char here_nick_file[1024];
+static char away_nick_file[1024];
+static char away_msg_file[1024];
 
 static xchat_plugin *ph;   /* plugin handle */
 static int enable = 1;
@@ -33,6 +46,20 @@ static char away_nick[256];
 static char away_msg[256];
 
 static xchat_hook *timer_hook;
+
+static void write_to_file(const char *filename, const char *data)
+{
+        FILE *file = fopen(filename, "w");
+        fwrite(data, sizeof(char), strlen(data), file);
+        fclose(file);
+}
+
+static void read_from_file(const char *filename, char *dst)
+{
+        FILE *file = fopen(filename, "r");
+        fgets(dst, 1024, file);
+        fclose(file);
+}
 
 
 static int is_screen_locked() {
@@ -81,6 +108,7 @@ static int autoaway_toggle_cb(char *word[], char *word_eol[], void *userdata)
 static int autoaway_set_here_name_cb(char *word[], char *word_eol[], void *userdata)
 {
 	strcpy(here_nick, word[2]);
+	write_to_file(here_nick_file,here_nick);
 	xchat_printf(ph, "Your name when not away is now %s\n", word[2]);
 	return XCHAT_EAT_ALL;   /* eat this command so xchat and other plugins can't process it */
 }
@@ -88,12 +116,14 @@ static int autoaway_set_here_name_cb(char *word[], char *word_eol[], void *userd
 static int autoaway_set_away_name_cb(char *word[], char *word_eol[], void *userdata)
 {
 	strcpy(away_nick, word[2]);
+	write_to_file(away_nick_file,away_nick);
 	xchat_printf(ph, "Your name when away is now %s\n", word[2]);
 	return XCHAT_EAT_ALL;   /* eat this command so xchat and other plugins can't process it */
 }
 
 static int autoaway_set_away_msg_cb(char *word[], char *word_eol[], void *userdata) {
 	strcpy(away_msg, word_eol[2]);
+	write_to_file(away_msg_file, away_msg);
 	xchat_printf(ph, "Your away message is now \"%s\"\n", word_eol[2]);
 	return XCHAT_EAT_ALL;
 }
@@ -105,17 +135,56 @@ void xchat_plugin_get_info(char **name, char **desc, char **version, void **rese
 	*version = PVERSION;
 }
 
+static int load_autoaway_data()
+{
+	if ((homedir = getenv("XDG_CONFIG_HOME")) == NULL) 
+	{
+		if ((homedir = getenv("HOME")) == NULL)
+		{
+    			homedir = getpwuid(getuid())->pw_dir;
+		}
+	}
+	sprintf(autoaway_dir, "%s/%s", homedir, DIR_NAME);
+	sprintf(here_nick_file,"%s/here_nick", autoaway_dir);
+	sprintf(away_nick_file, "%s/away_nick", autoaway_dir);
+	sprintf(away_msg_file, "%s/away_msg", autoaway_dir);
+
+	struct stat st = {0};
+
+	if (stat(autoaway_dir, &st) == -1)
+	{
+		int is_error;
+		is_error = mkdir(autoaway_dir, 0700);
+		if (is_error == -1) 
+		{
+			return CANNOT_OPEN_DIR_ERROR;
+		}
+		write_to_file(here_nick_file, "user");
+		write_to_file(away_nick_file, "user|away");
+		write_to_file(away_msg_file, "");
+	}
+
+	read_from_file(here_nick_file, here_nick);
+	read_from_file(away_nick_file, away_nick);
+	read_from_file(away_msg_file, away_msg);
+
+	return 0;
+}
+
+
 int xchat_plugin_init(xchat_plugin *plugin_handle,
 		char **plugin_name,
 		char **plugin_desc,
 		char **plugin_version,
 		char *arg)
 {
+	if (load_autoaway_data())
+	{
+		xchat_print(plugin_handle, "Couldn't start AutoAway: couldn't create plugin directory\n");
+		return 0;
+	}
 	/* we need to save this for use with any xchat_* functions */
 	ph = plugin_handle;
-	strcpy(here_nick, "user");
-	strcpy(away_nick, "user|away");
-	strcpy(away_msg, "");
 
 	/* tell xchat our info */
 	*plugin_name = PNAME;
